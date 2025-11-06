@@ -82,6 +82,7 @@ class ACTLossHead(nn.Module):
             # Correctness
             mask = (labels != IGNORE_LABEL_ID)
             loss_counts = mask.sum(-1)
+            # print(f"{loss_counts=}")
             loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1)  # Avoid NaNs in division
 
             is_correct = mask & (torch.argmax(outputs["logits"], dim=-1) == labels)
@@ -89,6 +90,7 @@ class ACTLossHead(nn.Module):
             
             # Metrics (halted)
             valid_metrics = new_carry.halted & (loss_counts > 0)
+            # print(f"{valid_metrics.sum()=} {new_carry.halted=}")
             metrics = {
                 "count": valid_metrics.sum(),
                 
@@ -116,5 +118,6 @@ class ACTLossHead(nn.Module):
         # Filter outputs for return
         detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
+        # print(f"checking {metrics=}")
         return new_carry, lm_loss + 0.5 * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
 
