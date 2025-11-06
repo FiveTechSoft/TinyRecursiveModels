@@ -39,6 +39,9 @@ class CheckpointMetadata:
     device: Optional[str] = None
     world_size: Optional[int] = None
     
+    # EMA info
+    contains_ema_weights: bool = False
+    
     def to_dict(self):
         return asdict(self)
 
@@ -153,7 +156,8 @@ class CheckpointManager:
             best_exact_acc_step=self.best_metrics.get('exact_acc_step'),
             device=additional_info.get('device') if additional_info else None,
             world_size=additional_info.get('world_size') if additional_info else None,
-            training_hours=additional_info.get('training_hours') if additional_info else None
+            training_hours=additional_info.get('training_hours') if additional_info else None,
+            contains_ema_weights=additional_info.get('contains_ema_weights', False) if additional_info else False
         )
         
         metadata_path = checkpoint_path / "metadata.json"

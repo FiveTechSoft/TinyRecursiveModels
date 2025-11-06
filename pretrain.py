@@ -11,6 +11,7 @@ import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
 from utils.checkpoint_utils import CheckpointManager
+import time
 
 import tqdm
 import wandb
@@ -646,6 +647,9 @@ def launch(hydra_config: DictConfig):
            run_name=config.run_name
        )
 
+    # Track training start time
+    training_start_time = time.time()
+
     # Dataset
     train_epochs_per_iter = config.eval_interval if config.eval_interval is not None else config.epochs
     total_iters = config.epochs // train_epochs_per_iter
@@ -733,6 +737,7 @@ def launch(hydra_config: DictConfig):
                         flatten_metrics[f"eval/{key}"] = val
                 if wandb.run is not None:
                     wandb.log(flatten_metrics, step=train_state.step, commit=True)
+                latest_eval_metrics = flatten_metrics
             ############ Checkpointing
             # if RANK == 0:
             #     print("SAVE CHECKPOINT")
@@ -742,14 +747,63 @@ def launch(hydra_config: DictConfig):
             if config.ema:
                 del train_state_eval
 
-    if RANK == 0 and checkpoint_manager:
-       checkpoint_manager.save_checkpoint(
-           train_state=train_state,
-           config=config,
-           metrics=eval_metrics,
-           is_final=True,
-           save_optimizer=True
-       )
+    # Save final checkpoint
+    if RANK == 0 and checkpoint_manager is not None:
+        print("\n" + "="*70)
+        print("SAVING FINAL CHECKPOINT")
+        print("="*70)
+        
+        # Calculate training time
+        training_hours = (time.time() - training_start_time) / 3600
+        
+        # Collect final metrics
+        final_metrics = {}
+        if 'latest_eval_metrics' in locals():
+            final_metrics.update(latest_eval_metrics)
+        
+        # Use EMA model if available
+        if config.ema and ema_helper is not None:
+            print("Using EMA model for final checkpoint")
+            final_train_state = copy.deepcopy(train_state)
+            final_train_state.model = ema_helper.ema_copy(final_train_state.model)
+        else:
+            final_train_state = train_state
+        
+        # Save checkpoint (EMA weights if using EMA)
+        checkpoint_manager.save_checkpoint(
+            train_state=final_train_state,
+            config=config,
+            metrics=final_metrics,
+            is_final=True,
+            save_optimizer=True,
+            additional_info={
+                'device': DEVICE,
+                'world_size': WORLD_SIZE,
+                'training_hours': training_hours,
+                'contains_ema_weights': config.ema  # Important: indicate if using EMA
+            }
+        )
+        
+        # Also save non-EMA model if using EMA
+        if config.ema:
+            print("Also saving non-EMA model")
+            non_ema_path = checkpoint_manager.checkpoint_dir / f"final_step_{train_state.step}_no_ema"
+            non_ema_path.mkdir(exist_ok=True)
+            torch.save(train_state.model.state_dict(), non_ema_path / "model.pt")
+            print(f"  ✓ Non-EMA model saved to {non_ema_path}")
+        
+        print(f"\n✅ Training completed in {training_hours:.2f} hours")
+        print(f"📁 Final checkpoint saved to: {checkpoint_manager.checkpoint_dir}")
+        
+        # Print final metrics
+        if final_metrics:
+            print(f"\n📊 Final metrics:")
+            for key, value in sorted(final_metrics.items()):
+                if isinstance(value, float):
+                    if 'acc' in key.lower():
+                        print(f"   {key}: {value:.2%}")
+                    else:
+                        print(f"   {key}: {value:.4f}")
 
     # finalize
     if dist.is_initialized():

@@ -2,9 +2,13 @@
 """
 Standalone evaluation script for puzzle model checkpoints.
 This script loads a trained checkpoint and runs inference on sample examples.
+
+Example: uv run python evaluate.py --data-path data/sudoku4x4/ --config checkpoints/trm/messy-earwig-of-enthusiasm/all_config.yaml --checkpoint checkpoints/trm/messy-earwig-of-enthusiasm/final_step_45/model.pt
+
 """
 
 import os
+import json
 import argparse
 import yaml
 from typing import Optional, Dict, Any
@@ -53,7 +57,9 @@ def create_model_from_config(config: Dict[str, Any], vocab_size: int, seq_len: i
     
     with torch.device(device):
         model = model_cls(model_cfg)
-        model = loss_head_cls(model, **arch_config['loss'])
+        # Filter out 'name' from loss config as it's not a constructor parameter
+        loss_config = {k: v for k, v in arch_config['loss'].items() if k != 'name'}
+        model = loss_head_cls(model, **loss_config)
         
     return model
 
@@ -191,10 +197,9 @@ def print_results(avg_metrics: Dict[str, float], example_outputs: list,
     
     print("\n" + "="*60)
 
-
 def main():
     parser = argparse.ArgumentParser(description='Evaluate puzzle model checkpoint')
-    parser.add_argument('checkpoint', type=str, 
+    parser.add_argument('--checkpoint', type=str, 
                        help='Path to checkpoint file (e.g., checkpoints/project/run/step_1000)')
     parser.add_argument('--data-path', type=str, required=True,
                        help='Path to dataset for evaluation')
@@ -206,8 +211,8 @@ def main():
                        help='Device to run evaluation on (default: cuda if available)')
     parser.add_argument('--config', type=str, default=None,
                        help='Path to config file (if not using checkpoint directory)')
-    parser.add_argument('--ema', action='store_true',
-                       help='Load EMA weights if available')
+    parser.add_argument('--no-ema', action='store_true',
+                       help='Load non-EMA weights if available (by default, uses checkpoint as-is)')
     parser.add_argument('--verbose', action='store_true',
                        help='Print detailed per-example outputs')
     parser.add_argument('--seed', type=int, default=42,
@@ -279,14 +284,45 @@ def main():
         model = load_checkpoint_weights(model, args.checkpoint, args.device)
         model = model.to(args.device)
         
-        # Handle EMA if requested
-        if args.ema:
-            ema_checkpoint = args.checkpoint.replace('step_', 'ema_step_')
-            if os.path.exists(ema_checkpoint):
-                print(f"Loading EMA checkpoint from {ema_checkpoint}")
-                model = load_checkpoint_weights(model, ema_checkpoint, args.device)
+        # Handle non-EMA weights if requested
+        if args.no_ema:
+            # Check if this checkpoint contains EMA weights
+            metadata_path = Path(args.checkpoint) / 'metadata.json'
+            contains_ema = False
+            
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    contains_ema = metadata.get('contains_ema_weights', False)
+            
+            if contains_ema:
+                # Try to load non-EMA version
+                checkpoint_dir = Path(args.checkpoint)
+                if checkpoint_dir.name.startswith('final'):
+                    # For final checkpoints, look for the _no_ema version
+                    step_num = checkpoint_dir.name.replace('final_step_', '').replace('final', '')
+                    if step_num:
+                        no_ema_path = checkpoint_dir.parent / f"final_step_{step_num}_no_ema"
+                    else:
+                        # Handle 'final' symlink case
+                        if checkpoint_dir.is_symlink():
+                            real_path = checkpoint_dir.resolve()
+                            step_num = real_path.name.replace('final_step_', '')
+                            no_ema_path = real_path.parent / f"final_step_{step_num}_no_ema"
+                        else:
+                            no_ema_path = checkpoint_dir.parent / "final_no_ema"
+                    
+                    no_ema_model_path = no_ema_path / "model.pt"
+                    if no_ema_model_path.exists():
+                        print(f"Loading non-EMA weights from {no_ema_model_path}")
+                        model = load_checkpoint_weights(model, str(no_ema_model_path), args.device)
+                    else:
+                        print(f"Warning: Non-EMA weights not found at {no_ema_model_path}")
+                        print("Using checkpoint weights (which contain EMA weights)")
+                else:
+                    print("Note: --no-ema flag used but checkpoint may not contain EMA weights")
             else:
-                print(f"Warning: EMA checkpoint not found at {ema_checkpoint}")
+                print("Note: Checkpoint does not contain EMA weights, --no-ema flag has no effect")
         
         # Run evaluation
         print(f"\n🚀 Running evaluation on {args.num_examples} examples...")
