@@ -16,8 +16,8 @@ evaluators: []
 # Hyperparams - Training
 global_batch_size: 4  # Reduced batch size
 
-epochs: 10000  # Reduced epochs for testing
-eval_interval: 1000
+epochs: 100  # Medium training for better results
+eval_interval: 25  # Evaluate every 25 epochs
 checkpoint_every_eval: True
 
 lr: 1e-4
